@@ -13,9 +13,9 @@
 
 I chose Next.js because it allows me to build both the **Dashboard** (Frontend) and the **API** (Backend) in a single repository. I don't need to spin up a separate Express or Python server just to handle a few API requests. The `app/api` folder acts as my backend server.
 
-### 2. Vector Databases (pgvector)
+### 2. Vector Databases (pgvector) in Postgres
 
-I learned that standard databases store text, but to do **RAG (Retrieval Augmented Generation)**, I need to store "vectors" (lists of numbers that represent meaning). Supabase is just PostgreSQL under the hood, so enabling the `vector` extension turns a standard SQL database into an AI database.
+To do **RAG (Retrieval Augmented Generation)**, I need to store "vectors" (lists of numbers that represent meaning). Supabase is just PostgreSQL under the hood, so enabling the `vector` extension turns a standard SQL database into an AI database.
 
 ---
 
@@ -45,7 +45,7 @@ Before writing complex code, I needed to prove the app works.
 1. I manually inserted a dummy row (`feat: database works`) into the Supabase Dashboard
 2. I wrote a simple fetch function in `page.tsx`
 
-**Result:** The data appeared on `localhost:3000`. The connection is live. ✅
+**Result:** The data appeared on `localhost:3000`. The connection is live. 
 
 ---
 
@@ -59,7 +59,7 @@ I had to decide how to find the "best matching" past posts for the RAG engine.
 2. Loop through them in JavaScript to calculate the math
 3. Pick the top 3
 
-### Option B: The SQL Way (What I Chose) ✅
+### Option B: The SQL Way (What I Chose) 
 
 1. Send the query to the database
 2. Let the database do the math internally
@@ -69,9 +69,7 @@ I had to decide how to find the "best matching" past posts for the RAG engine.
 
 I wrote a function called `match_style` directly in the Supabase SQL Editor using **PL/pgSQL**.
 
-> It is much faster to **"bring the compute to the data."** If I did this in JavaScript, I would waste network bandwidth downloading thousands of rows just to filter them. By doing it in SQL, the database (which runs in C++) does the math instantly and sends back only what I need.
-
-It's like asking a librarian to find the "best 3 books" versus asking them to bring every book in the library to your house so you can pick 3 yourself.
+> It is much faster to **"bring the compute to the data."** If I did this in JavaScript, I would waste network bandwidth downloading thousands of rows just to filter them. By doing it in SQL, the database (which runs in C/C++) does the math instantly and sends back only what I need.
 
 ```sql
 -- The function runs inside Postgres
