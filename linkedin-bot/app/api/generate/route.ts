@@ -6,9 +6,16 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import Groq from 'groq-sdk';
+
+// we will import new utility created /lib/generate-images.ts to generate images for the post
+import { generateAndUploadImage } from "@/lib/generate-images";
+
 import * as dotenv from 'dotenv';
 
 dotenv.config({path: '.env.local'});
+
+// our API calls might take more than 10 secs ( limit of serverless nexjs and vercel functions), so we increase duration
+export const maxDuration = 60; // 60 seconds
 
 // Initialize clients
 const supabase = createClient(
@@ -87,12 +94,45 @@ export async function POST(req: Request){
         // the generated content is in chatCompletion.choices[0].message.content
         const aiContent = chatCompletion.choices[0]?.message?.content || "GENERATION FAILED!!!!!!!!!!!";
 
-        // step3 save the draft to supabase
+        // STEP 3: VISUALS 
+        // call our abstracted fallback function to generate an image based on the commit and readme and upload to supabase, get back the public url
+        console.log("Generating dynamic visual prompt for Hugging Face...");
+
+        // We ask Groq to act as an art director and summarize the tech context into a visual description
+        const imageInstruction = `
+            Analyze the following code commit context and write a single, highly descriptive sentence for a 3D render.
+            
+            CRITICAL RULES FOR VISUALS:
+            1.  **NO METAPHORS:** Do not use phrases like "fortress of knowledge," "tapestry of memory," or "corridors of data."
+            2.  **BE CONCRETE & PHYSICAL:** Describe actual objects that can be photographed.
+                - Instead of "vector search," describe "a glowing server rack with blinking blue lights."
+                - Instead of "processing PDFs," describe "a conveyor belt moving glowing holographic documents into a scanner."
+                - Instead of "AI assistant," describe "a central holographic interface with a robotic arm."
+            3.  **FOCUS ON ACTION:** Describe what the objects are physically doing (e.g., "connected by thick cables," "emitting light," "stacked in a pile").
+            4.  **LENGTH:** Keep it under 50 words. Shorter, punchier descriptions often yield better results than long, confusing ones.
+
+            Commit Message: ${message}
+            README Context: ${readme ? readme.substring(0, 20000) : "None"}
+            Code Diff: ${diff ? diff.substring(0, 1000) : "None"}
+        `;
+
+        const imagePromptCompletion = await groq.chat.completions.create({
+            messages: [{role: 'user', content: imageInstruction}],
+            model: "llama-3.3-70b-versatile"
+        });
+
+        const dynamicVisualContext = imagePromptCompletion.choices[0]?.message?.content?.trim() || message;
+        console.log("Dynamic Context generated: ", dynamicVisualContext);
+
+        const permanentImageUrl = await generateAndUploadImage(dynamicVisualContext);
+
+        // step4 save the draft to supabase
 
         const {data, error} = await supabase.from('posts').insert([{
             commit_message : message,
             readme_content : readme ? readme.substring(0, 20000) : null, // Save a chunk of readme to DB for your records
             draft_content : aiContent,
+            image_url: permanentImageUrl || null, // Save image url to DB
             status: 'draft'
         }]).select();
 
@@ -101,12 +141,12 @@ export async function POST(req: Request){
             return NextResponse.json({error: "Error saving post to database"}, {status: 500});
         }
 
-        return NextResponse.json({success: true, id: data[0].id, content: aiContent});
+        return NextResponse.json({success: true, id: data[0].id, content: aiContent, image_url: permanentImageUrl}, {status: 200});
 
 
     }
 
-    catch(error) {
+    catch(error: any) {
         console.error("Error in POST handler / API: ", error);
         return NextResponse.json({error: error.message || "Unknown error"}, {status: 500});
     }

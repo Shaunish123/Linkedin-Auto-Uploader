@@ -164,3 +164,180 @@ I also added a **Dynamic Context Router** to the prompt instructions:
 
 - If a README is present, the AI ignores the code diff and writes a "Final Project Launch" post.
 - If no README is present, the AI focuses on the code diff and writes a "Day-to-day Bug Fix" post.
+
+---
+
+---
+
+## Day 3: The Visuals Foundation (Storage & API Battles)
+
+**Date:** February 21, 2026
+
+**Goal:** Abstract the image generation logic, set up a Supabase storage bucket, and test different AI image APIs to find a reliable, free solution.
+
+---
+
+## Things I Learned (and Problems Faced)
+
+### 1. Separation of Concerns
+
+My `route.ts` file was getting massive. Instead of cramming the image generation and upload logic directly into the main API handler, I created a dedicated utility file at `lib/generate-image.ts`. This keeps the backend modular. If I want to swap image models later, I only have to touch one file.
+
+### 2. The Free Tier Reality Check
+
+I initially tried to use Google's Imagen model through the Gemini API.
+
+**The Problem:** Google gives millions of text tokens for free, but hard-locks image generation behind a paywall. My terminal instantly spat out a quota limit of `0`.
+
+**The Pivot:** I moved to Pollinations.ai, a free, community-funded wrapper. But I immediately hit Cloudflare blocks (Error 1033) and server timeouts (Error 530). I managed to bypass their bot-protection by injecting a Chrome `User-Agent` header into my fetch request, but the servers were just too unstable for a production pipeline.
+
+---
+
+## How I Built It
+
+### Step 1: The Supabase Storage Bucket
+
+I went into my Supabase dashboard and created a new public bucket called `linkedin-images`. This is where the generated images will live so they can be securely linked in the final LinkedIn post.
+
+### Step 2: The Utility Wrapper
+
+I set up the basic structure for `generateAndUploadImage`. It takes a string, attempts to generate an image buffer, and then pushes that buffer directly to Supabase.
+
+```typescript
+// Initial setup in lib/generate-image.ts
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+export async function generateAndUploadImage(prompt: string): Promise<string> {
+    let imageBuffer: Buffer | null = null;
+    // ... API call logic goes here ...
+}
+
+```
+
+---
+
+## Day 4: The Unbreakable Pipeline & RLS
+
+**Date:** February 22, 2026
+
+**Goal:** Finalize the image generation using a reliable open-source model and ensure the pipeline never crashes, even if third-party servers go down.
+
+---
+
+## Things I Learned (and Problems Faced)
+
+### 1. Hugging Face API Migrations
+
+I decided to use Hugging Face's Serverless Inference API to run `FLUX.1-schnell` (an incredibly fast, high-quality open-source model).
+
+**The Problem:** My first test threw a `410 Gone` error.
+**The Fix:** I learned Hugging Face recently deprecated their old `api-inference` URLs. I had to update my endpoint to route through their new inference provider system (`router.huggingface.co/hf-inference/models/...`).
+
+### 2. Supabase Row-Level Security (RLS) Blocks Uploads
+
+Even after successfully generating the image buffer, Supabase rejected the upload with a "violates row-level security policy" error.
+
+**The Fix:** Setting a bucket to "Public" only allows people to *view* the images. To let my API *insert* files, I had to write a specific SQL policy.
+
+```sql
+-- Unlocking the bucket for API inserts
+create policy "Allow API uploads"
+on storage.objects
+for insert
+to public
+with check (bucket_id = 'linkedin-images');
+
+```
+
+---
+
+## How I Built It
+
+### The 3-Tier Safety Net
+
+To make sure my automated LinkedIn posts never fail due to a server crash, I built a nested `try/catch` architecture.
+
+1. **Primary:** Hugging Face (FLUX.1-schnell).
+2. **Fallback:** Pollinations.ai (if Hugging Face rate-limits me).
+3. **Ultimate Fallback:** A reliable, moody grayscale placeholder from `picsum.photos` if all AI generators are down.
+
+```typescript
+try {
+    // 1. Try Hugging Face FLUX.1
+    // ... fetch logic ...
+} catch (hfError) {
+    try {
+        // 2. Fall back to Pollinations
+        // ... fetch logic ...
+    } catch (fallbackError) {
+        // 3. The Ultimate Fallback (Guaranteed to work)
+        const reliableUrl = `https://picsum.photos/seed/${seed}/1024/768?grayscale&blur=2`;
+        const res = await fetch(reliableUrl);
+        imageBuffer = Buffer.from(await res.arrayBuffer());
+    }
+}
+
+```
+
+---
+
+## Day 5: The "Art Director" (Sequential Prompt Chaining)
+
+**Date:** February 22, 2026
+
+**Goal:** Fix the quality of the generated images by preventing the AI from hallucinating over abstract code concepts.
+
+---
+
+## Things I Learned
+
+### Image Models Hate Abstract Concepts
+
+I passed the raw commit message `"feat: launch InsightPDF v1.0"` directly to the image model. The result was terrible. Image models like FLUX.1 don't understand invisible concepts like "code," "databases," or "vector search." When forced to draw abstract metaphors, they panic and output generic, blurry neon shapes.
+
+I needed to translate code terminology into concrete, physical objects.
+
+---
+
+## How I Built It
+
+### Sequential Prompt Chaining
+
+Instead of asking one LLM to do everything at once, I split the task. In my main `route.ts`, right after Groq generates the text for the LinkedIn post, I added a *second* API call to Groq.
+
+I instructed this second prompt to act as an "Art Director." It reads the code diff and README, and outputs a highly specific, physical visual description (e.g., translating "database" into "a glowing server rack"). I then pass *that* concrete description to the image generator.
+
+```typescript
+// The new Art Director prompt in route.ts
+const imageInstruction = `
+    Analyze the following code commit context and write a single, highly descriptive sentence for a 3D render.
+    
+    CRITICAL RULES FOR VISUALS:
+    1. NO METAPHORS: Do not use phrases like "fortress of knowledge" or "corridors of data."
+    2. BE CONCRETE & PHYSICAL: Describe actual objects. Instead of "vector search," describe "a glowing server rack."
+    3. Keep it under 50 words.
+
+    Commit Message: ${message}
+    README Context: ${readme ? readme.substring(0, 3000) : "None"}
+`;
+
+const imagePromptCompletion = await groq.chat.completions.create({
+    messages: [{role: 'user', content: imageInstruction}],
+    model: "llama-3.3-70b-versatile"
+});
+
+const dynamicVisualContext = imagePromptCompletion.choices[0]?.message?.content?.trim();
+
+// Pass the physical description to the image generator, not the raw commit
+const permanentImageUrl = await generateAndUploadImage(dynamicVisualContext);
+
+```
+
+This single architectural change dramatically improved the relevance and quality of the generated 3D renders. The backend pipeline is now completely finished.
+
+---
