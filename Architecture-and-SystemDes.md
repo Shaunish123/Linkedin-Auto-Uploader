@@ -3,69 +3,80 @@
 
 ## 1. High-Level Overview
 
-The Commit-to-LinkedIn Engine is an event-driven, serverless pipeline designed to automate the generation of technical developer content. It leverages Retrieval-Augmented Generation (RAG) to ensure stylistic consistency and uses a multi-modal AI approach (Text + Image) to create high-engagement posts directly from git commit metadata.
+The Commit-to-LinkedIn Engine is an event-driven, serverless microservice designed to automate the generation of technical developer content. It leverages Retrieval-Augmented Generation (RAG) to ensure stylistic consistency and uses a multi-modal AI approach (Text + Image) to create high-engagement posts directly from git commit metadata and codebase documentation.
 
-**Core Philosophy:** Zero-friction documentation. The system acts as a "Ghostwriter" that observes code changes and drafts content asynchronously, requiring human intervention only for final approval.
+**Core Architecture:**
+To achieve true "Zero-Configuration" scaling across a developer's entire portfolio, the system utilizes a **Decoupled Event-Driven Architecture**. By utilizing Account-Level GitHub Webhooks and a Serverless Redis Message Queue (Upstash QStash), new repositories added to the GitHub account are automatically integrated into the AI pipeline without requiring localized CI/CD YAML configuration files. This decoupling safely bypasses strict serverless timeout limits, allowing complex AI inference to run asynchronously.
 
 ## 2. System Architecture Diagram
 
-The system follows a **Push-Based Event Architecture**. The workflow is triggered by a specific event (Git Push) and processed via a serverless Next.js backend.
+The system utilizes a **Push-Based Asynchronous Workflow**. The workflow separates the immediate event trigger from the heavy compute processing to safely navigate serverless execution limits.
 
 ```mermaid
 graph TD
     %% Source
-    subgraph "Event Source"
-        Dev[Developer] -->|git push| Repo[GitHub Repository]
-        Repo -->|Trigger| Action[GitHub Actions Runner]
+    subgraph "Event Source (Global)"
+        Dev[Developer] -->|"Publish Release (Tag v1.0)"| Repo[Any GitHub Repository]
+        Repo -->|Global Webhook POST| QStash[Upstash QStash Queue]
     end
 
-    %% Processing Layer
+    %% Processing Layer (The Worker)
     subgraph "Control Plane (Next.js / Vercel)"
-        Action -->|POST Payload| API[API Route: /api/generate]
-        API -->|Auth Check| Secret[Validate API Secret]
+        QStash -->|"Forward Payload (Async)"| API["API Route: /api/generate"]
+        API -->|1. Cryptographic Auth| Security[HMAC SHA-256 Verification]
+        API -->|2. Content Hydration| GitAPI[GitHub API: Fetch raw README.md]
         
         %% RAG Sub-system
-        API -->|1. Generate Embeddings| Embed[Google Gemini Text-Embedding-004]
-        Embed -->|2. Query Vector DB| VectorDB[(Supabase pgvector)]
-        VectorDB -->|3. Return Style Context| API
+        API -->|3. Generate Embeddings| Embed[Google Gemini text-embedding-004]
+        Embed -->|4. Query Vector DB| VectorDB[("Supabase pgvector")]
+        VectorDB -->|5. Return Style Context| API
         
         %% Inference Sub-system
-        API -->|4. Generate Text| LLM[Groq (Llama 3.3 70B)]
-        API -->|5. Generate Visuals| Vision[Google Imagen 3]
+        API -->|6. Text Generation| LLM_Text[Groq: Llama 3.3 70B]
+        API -->|7. The Art Director| LLM_Prompt[Groq: Extract Visual Context]
+        API -->|8. Generate Image| Vision[Hugging Face: FLUX.1-schnell]
     end
 
     %% Persistence Layer
     subgraph "Data Plane (Supabase)"
-        Vision -->|6. Upload Buffer| Storage[Object Storage Bucket]
-        Storage -->|7. Return Public URL| API
-        API -->|8. Persist Draft| DB[(PostgreSQL)]
+        Vision -->|9. Upload Binary Buffer| Storage[Object Storage: linkedin-images]
+        Storage -->|10. Return Public URL| API
+        API -->|11. Persist Final Draft| DB[("PostgreSQL")]
     end
 
     %% Presentation Layer
-    subgraph "Client"
-        DB -->|Fetch| Dashboard[Next.js Dashboard]
-        Dashboard -->|Approve/Edit| User
-        User -->|Publish| LinkedIn[LinkedIn API]
+    subgraph "Client Dashboard"
+        DB -->|"Fetch Status: Draft"| Dashboard[Next.js UI]
+        Dashboard -->|Human Review & Edit| User
+        User -->|OAuth 2.0 Publish| LinkedIn[LinkedIn v2 API]
     end
 ```
 
 ## 3. Technology Stack & Rationale
 
 | Component | Technology | Rationale |
-|-----------|------------|----------|
-| Compute | Next.js (App Router) | Provides serverless API routes (`/api/*`) and frontend UI in a single monorepo. Deployed on Vercel for zero-config scaling. |
-| Database | Supabase (PostgreSQL) | Combines relational data (users, posts) with pgvector for semantic search, eliminating the need for a separate vector DB (like Pinecone). |
-| LLM Inference | Groq (Llama 3.3 70B) | Chosen for ultra-low latency inference (~300ms) and high-quality coding capabilities compared to smaller models. |
-| Embeddings | Gemini text-embedding-004 | High-dimensional (768d) embeddings optimized for semantic retrieval of technical content. |
-| Image Gen | Google Imagen 3 | Superior photorealism for abstract tech concepts compared to Stable Diffusion. |
-| Object Storage | Supabase Storage | S3-compatible storage for serving generated images via public URLs. |
-| CI/CD Trigger | GitHub Actions | Enables "Infrastructure as Code" for the trigger mechanism, running directly in the repository context. |
+| --- | --- | --- |
+| **Compute / API** | Next.js (App Router) on Vercel | Provides serverless API routes (`/api/*`) and frontend UI in a single monorepo. Configured with `maxDuration: 60` for background processing. |
+| **Message Queue** | Upstash QStash (Serverless Redis) | Acts as the critical asynchronous buffer. Intercepts the GitHub webhook, returns an instant `200 OK` to prevent client timeouts, and securely forwards the payload to the Vercel worker. |
+| **Database** | Supabase (PostgreSQL) | Combines relational data tracking (users, post states) with `pgvector` for semantic search, eliminating the need for a separate vector database. |
+| **LLM Inference** | Groq (Llama 3.3 70B) | Chosen for ultra-low latency inference. Acts in a dual capacity: first as the technical copywriter, and second as the "Art Director" translating abstract code into physical visual prompts. |
+| **Embeddings** | Gemini text-embedding-004 | High-dimensional (768d) embeddings optimized for semantic retrieval of technical and stylistic content. |
+| **Image Gen** | Hugging Face (FLUX.1-schnell) | State-of-the-art open-source image model utilized via Serverless Inference API for rapid, high-fidelity 3D technical renders. Replaces Google Imagen due to API constraints. |
+| **Trigger Mechanism** | GitHub Global Webhooks | Enables "Zero-Configuration" scaling across the entire developer account. Eliminates the need for localized CI/CD YAML files per repository. |
 
-## 4. Data Architecture
+## 4. The Serverless Timeout Dilemma (Why Redis?)
 
-### 4.1. Database Schema (PostgreSQL)
+A core engineering challenge in this architecture is the incompatibility between GitHub's strict webhook delivery rules and Vercel's serverless lifecycle.
 
-The system uses a relational schema with vector extensions.
+1. **The Client Constraint:** GitHub Webhooks require a `200 OK` response within **10 seconds**, otherwise the delivery is marked as a failure and the connection is dropped.
+2. **The Compute Constraint:** The AI pipeline (RAG + Text Gen + Image Gen + Storage) requires **20-30 seconds** to execute.
+3. **The Serverless Freeze Trap:** Standard Node.js Express servers can return a response and continue processing in the background. Vercel Serverless functions **freeze CPU execution** the exact millisecond a response is returned.
+
+**The Solution:** An asynchronous decoupled queue using Upstash QStash. QStash intercepts the webhook, immediately satisfies GitHub's 10-second rule, and then acts as a persistent client, holding the connection to Vercel open for the full 60-second `maxDuration` window while the AI pipeline runs.
+
+## 5. Data Architecture
+
+### 5.1. Database Schema (PostgreSQL)
 
 #### Table: `style_examples` (The Knowledge Base)
 
@@ -81,20 +92,20 @@ CREATE TABLE style_examples (
 
 #### Table: `posts` (The State Machine)
 
-Stores the lifecycle of a generated post.
+Stores the lifecycle of a generated post, tracking its journey from an async job to a published entity.
 
 ```sql
 CREATE TABLE posts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   repo_name TEXT NOT NULL,
-  original_commit_msg TEXT NOT NULL,
+  release_tag TEXT NOT NULL,
   
   -- AI Generated Assets
   draft_content TEXT,
   image_url TEXT,
   
   -- Workflow State
-  status TEXT CHECK (status IN ('draft', 'published', 'failed')) DEFAULT 'draft',
+  status TEXT CHECK (status IN ('queued', 'draft', 'published', 'failed')) DEFAULT 'queued',
   
   -- Metadata
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -102,46 +113,39 @@ CREATE TABLE posts (
 );
 ```
 
-### 4.2. Vector Search Implementation
+### 5.2. Vector Search Implementation
 
-We utilize **Cosine Similarity** to retrieve relevant style examples. The query logic is wrapped in a PL/pgSQL function for performance.
+* **Metric:** Cosine Distance (`<=>` operator in pgvector).
+* **Threshold:** Strict distance filtering (`< 0.5`) to ensure stylistic alignment before appending context to the LLM prompt.
 
-- **Metric:** Cosine Distance (`<=>` operator in pgvector)
-- **Threshold:** < 0.5 distance ensures strict stylistic alignment
+## 6. Pipeline Sequence (The "Generate" Flow)
 
-## 5. Pipeline Sequence (The "Generate" Flow)
-
-1. **Ingestion:**
-   - GitHub Action captures the commit message (`feat: added rbac`) and the git diff
-   - Payload is signed with a secret key and sent to `/api/generate`
-
-2. **Semantic Retrieval (RAG):**
-   - The commit message is embedded using `text-embedding-004`
-   - System queries `style_examples` for the top 2 most semantically similar past posts (e.g., retrieving a past "feature announcement" to match the current "feature" commit)
-
-3. **Context Construction:**
-   - A prompt is constructed dynamically: System Instruction + Style Examples + Code Diff
-
-4. **Inference:**
-   - **Text:** Groq generates the post body using Llama 3.3
-   - **Visual:** Google Imagen 3 generates a 3D abstract render based on the commit keywords
-
-5. **Asset Management:**
-   - The raw binary image (Base64) is buffered and streamed to Supabase Storage
-   - The returned Public URL is attached to the draft
-
+1. **The Global Trigger:** A developer publishes a Release (e.g., `v1.0`) on any owned repository. GitHub fires an account-level webhook payload containing metadata (repo name, owner, tag).
+2. **The Queue Intercept (QStash):** Upstash receives the webhook, replies `200 OK` to GitHub, and forwards the payload to `/api/generate`.
+3. **Validation & Hydration:** * The Next.js API validates the HMAC SHA-256 signature.
+* The API dynamically construc
+   * The Next.js API validates the HMAC SHA-256 signature.
+   * The API dynamically constructs the raw GitHub content URL (`https://raw.githubusercontent.com/{owner}/{repo}/{tag}/README.md`) and executes an HTTP `GET` to pull the documentation into memory.
+4. **Semantic Retrieval (RAG):** The commit metadata is embedded and queries `style_examples` for the top 2 most semantically similar past posts.
+5. **Inference & Art Direction:**
+   * **Text:** Groq generates the post body using Llama 3.3 and the RAG context.
+   * **Sequential Prompting:** A secondary Groq call (the "Art Director") translates abstract code concepts from the README into a concrete, physical 3D visual description (preventing AI hallucinations on abstract terms).
+   * **Visual:** The physical description is passed to Hugging Face FLUX.1 to generate the image buffer.
 6. **Persistence:**
-   - The final draft object is written to the `posts` table
+   * The raw binary image is streamed to the Supabase `linkedin-images` bucket.
+   
 
-## 6. Security & Constraints
 
-- **API Security:** The `/api/generate` endpoint is protected via a static `x-secret-key` header matching the GitHub Repository Secret
-- **Payload Limits:** The GitHub Action truncates git diff output to 3000 lines to prevent token limit exhaustion and payload size errors
-- **Failover Strategy:** If Google Imagen API fails (due to strict safety filters or rate limits), the system automatically falls back to Pollinations.ai to ensure a draft is always created
+## 7. Security, Constraints & Failovers
 
-## 7. Future Roadmap (V2 Considerations)
+* **Cryptographic Webhook Security:** The API endpoint rejects any payload that does not contain a valid `X-Hub-Signature-256`. The system uses Node's `crypto` module to hash the incoming payload with a shared secret to prevent malicious SSRF or spam attacks.
+* **Storage Security:** Supabase Storage utilizes strict Row-Level Security (RLS) policies, allowing `INSERT` operations only via the authenticated API backend, while maintaining `SELECT` access for public viewing.
+* **Cascading API Failovers:** If the Hugging Face API experiences downtime or `410 Gone` errors, the system catches the exception and falls back to Pollinations.ai, and ultimately to a static grayscale placeholder generator to ensure the database draft is never permanently blocked.
+* **Dead Letter Queue (DLQ):** If the Vercel API is unreachable, QStash automatically retries the delivery. Persistent failures are routed to a DLQ for manual inspection and replay, ensuring zero data loss.
+
+## 8. Future Roadmap (V2 Considerations)
 
 - **Multi-Tenancy:** Implementing Row Level Security (RLS) to support multiple users
-- **LinkedIn OAuth:** Automating the "Publish" step via LinkedIn v2 API (`w_member_social` scope)
-- **Analytics Feedback Loop:** Feeding LinkedIn engagement metrics back into the Vector DB to weight "successful" styles higher
 
+- **Analytics Feedback Loop:** Feeding LinkedIn engagement metrics back into the Vector DB to weight "successful" styles higher
+- **Analytics Feedback Loop:** Feeding LinkedIn engagement metrics back into the Vector DB to weight "successful" styles higher
