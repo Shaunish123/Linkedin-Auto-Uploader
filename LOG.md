@@ -341,3 +341,77 @@ const permanentImageUrl = await generateAndUploadImage(dynamicVisualContext);
 This single architectural change dramatically improved the relevance and quality of the generated 3D renders. The backend pipeline is now completely finished.
 
 ---
+
+## Day 6: The Architectural Pivot (Actions vs. Webhooks)
+
+**Date:** February 23, 2026  
+**Goal:** Rethink the deployment trigger to avoid copying YAML files into every single future repository, and design a system that scales automatically.
+
+---
+
+## Things I Learned
+
+### 1. The Limitation of GitHub Actions (CI/CD)
+Up until now, my plan was to use GitHub Actions. I was going to write a `release.yml` file that would spin up an Ubuntu server whenever I published a release, read my README, and send it to my Next.js API. 
+
+**The Problem:** GitHub Actions are strictly *repo-scoped*. That means if I build 10 new projects this year, I have to manually copy and paste that YAML file into all 10 repositories and configure the API secrets 10 different times. That defeats the purpose of automation.
+
+### 2. Global Webhooks & The Timeout Trap
+I researched an alternative: **Account-Level Webhooks**. I can tell my GitHub account to globally listen to *all* my repositories and ping my server when any of them launch a release. Zero configuration per repo. 
+
+But I immediately hit a massive architectural roadblock: **The Serverless Timeout Trap.**
+* **The GitHub Rule:** When GitHub sends a webhook, it demands an HTTP 200 OK response within exactly 10 seconds. If it doesn't get one, it marks the delivery as a failure and drops the connection.
+* **The Vercel Rule:** Serverless functions on Vercel freeze their CPU the exact millisecond you return a response. You can't return a "200 OK" and then keep running heavy AI tasks in the background.
+* **The Math:** My AI pipeline (Text RAG + Visual Prompt + Image Gen + Database Upload) takes about 25 to 30 seconds. 
+
+If I used a standard webhook, GitHub would time out and fail before my AI even finished generating the image. 
+
+---
+
+## How I Fixed It: The Decoupled Message Queue
+
+I realized I couldn't just point GitHub directly at my Next.js API. I needed a middleman. 
+
+I decided to pivot the entire architecture to an **Event-Driven Microservice** using a Message Queue.
+
+Here is the new flow (in plain English):
+1. **The Global Manager (GitHub):** Watches all my repositories. When I publish a release, it fires a payload across the internet.
+2. **The Patient Butler (The Message Queue):** A separate server catches the payload. It instantly says "Thank you" to GitHub (satisfying the 10-second rule), so GitHub leaves happy.
+3. **The Kitchen (Next.js API):** The Butler then walks the payload over to my Vercel API and patiently holds the door open for a full 60 seconds while the AI cooks up the post and the image.
+
+This takes me out of standard web development and into distributed systems engineering. It is more complicated to build, but it means I never have to write a YAML configuration file again.
+
+---
+
+## Day 7: Provisioning the Global Infrastructure
+
+**Date:** February 24, 2026  
+**Goal:** Set up the "Patient Butler" (Message Queue) and the "Global Manager" (GitHub App) without touching any code yet.
+
+---
+
+## Things I Learned & What I Built
+
+To make this new architecture work, I had to provision two pieces of external infrastructure.
+
+### Step 1: Upstash QStash (The Message Queue)
+I needed a serverless message queue that wouldn't charge me a massive monthly AWS bill. I found **Upstash QStash**, which is essentially a serverless Redis instance built specifically for asynchronous messaging.
+
+* **What it is:** A decoupled buffer. It catches webhooks, queues them up, and securely forwards them to serverless environments like Vercel with built-in automatic retries if my API crashes.
+* **How I accessed it:** I went to upstash.com, created a free account, and navigated to the QStash dashboard. 
+* **The Setup:** I generated my REST API credentials. The most important parts were the `QSTASH_URL` (where GitHub will send the data) and the **Signing Keys**. Because my Next.js API will be public, I need these cryptographic keys to mathematically verify that incoming traffic is actually from Upstash, not a hacker trying to spam my LinkedIn.
+
+### Step 2: Creating a Private GitHub App
+Initially, I was going to use a standard Webhook in my GitHub settings. But I learned that building a **Private GitHub App** is the enterprise standard because of security.
+
+* **What it is:** Instead of using a Personal Access Token (which acts like a master key to my entire GitHub account), an App acts like a contractor with a restricted ID badge. It uses the Principle of Least Privilege.
+* **How I accessed it:** `GitHub Settings -> Developer settings -> GitHub Apps -> New GitHub App`.
+* **The Setup:** 1.  **The Placeholder:** Because my Next.js API isn't built or hosted yet, I just put a temporary placeholder URL (`https://example.com/api/webhook`) in the Webhook URL field. I will update this to point to my Upstash QStash queue later once the app is deployed.
+    2.  **Security:** I generated a strong Webhook Secret. I will need this later to mathematically verify that incoming payloads actually came from GitHub.
+    3.  **Permissions:** I disabled absolutely everything except `Contents: Read-only`. This ensures the app can only read my `README.md` files and has zero permission to modify code or access packages.
+    4.  **Events:** I subscribed strictly to the `Release` event.
+    5.  Finally, I installed the App on my entire account. 
+
+The foundational infrastructure is provisioned. 
+
+The next day, I need write the Next.js API route to actually catch what GitHub throws at it!
