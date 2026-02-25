@@ -10,9 +10,9 @@ import Groq from 'groq-sdk';
 // we will import new utility created /lib/generate-images.ts to generate images for the post
 import { generateAndUploadImage } from "@/lib/generate-images";
 
-import * as dotenv from 'dotenv';
+// import * as dotenv from 'dotenv';
 
-dotenv.config({path: '.env.local'});
+// dotenv.config({path: '.env.local'});
 
 // our API calls might take more than 10 secs ( limit of serverless nexjs and vercel functions), so we increase duration
 export const maxDuration = 60; // 60 seconds

@@ -415,3 +415,50 @@ Initially, I was going to use a standard Webhook in my GitHub settings. But I le
 The foundational infrastructure is provisioned. 
 
 The next day, I need write the Next.js API route to actually catch what GitHub throws at it!
+
+---
+
+## Day 8: The Edge Receiver & Cryptographic Security
+
+**Date:** February 25, 2026  
+**Goal:** Build the secure "Front Door" API route to catch GitHub's webhook, verify its authenticity, and pass it to the Upstash message queue.
+
+---
+
+## Things I Learned
+
+### 1. Cryptographic Webhook Security (HMAC SHA-256)
+If my API is public, anyone on the internet can send a fake POST request to it. If a hacker triggered my API, they would drain my Groq and Hugging Face credits and post spam to my LinkedIn. 
+
+To fix this, I learned about **HMAC SHA-256**. GitHub takes the payload and my secret password, mixes them in a one-way math equation, and sends me the resulting 64-character signature. My Next.js server runs the exact same equation locally. If the signatures match perfectly, I know it's mathematically impossible for the payload to be forged. It acts like a Bouncer checking an ID at the door.
+
+### 2. Next.js Runtime vs. Standalone Node.js
+I initially tried to import `dotenv` into my new API route, remembering that I had to do this on Day 2 for my `seed.ts` script. I realized that the Next.js framework automatically injects `.env.local` variables into `process.env` at startup. Standalone scripts need `dotenv` because they bypass Next.js entirely, but native API routes do not. 
+
+### 3. The "Claim Check" Pattern
+I wondered why I was only extracting the `Repo Name`, `Owner`, and `Tag` from the GitHub payload. Why not just send the whole `README.md` through the queue?
+
+I learned a core distributed systems concept called the **Claim Check Pattern**. 
+Message queues like Upstash have strict payload size limits (256KB on the free tier). A 15,000-character README is too heavy. Instead of passing the "heavy suitcase" to the queue, I just pass a "Claim Check" (the exact coordinates: Repo, Owner, Tag). The background worker will use those coordinates to fetch the heavy file later. 
+
+---
+
+## How I Built It
+
+### Step 1: SDKs and Environment Setup
+I had a slight typo trying to install `@upstash/upstash` which threw a 404 error, but corrected it to install the official messaging SDK:
+`npm install @upstash/qstash`
+
+I then securely added my `GITHUB_WEBHOOK_SECRET` and my Upstash signing keys to my `.env.local` file.
+
+### Step 2: The Bouncer (`/api/webhook/route.ts`)
+I built the Edge Receiver. It is designed purely for speed and security. It does not touch the AI models or the database. 
+
+Here is the exact flow of the code I wrote:
+1. **Receive:** Catches the raw POST request from GitHub.
+2. **Verify:** Uses Node's `crypto.timingSafeEqual` to compare the GitHub HMAC signature against my locally generated hash. If it fails, it returns a `401 Unauthorized`.
+3. **Filter:** Ignores any webhook event that isn't a `published` release.
+4. **The Handoff:** Extracts the `repoName`, `owner`, and `tag` (The Claim Check), and uses `qstashClient.publishJSON()` to forward those coordinates to my Upstash queue.
+5. **The Disconnect:** Immediately returns a `200 OK` to GitHub so the webhook delivery succeeds without triggering the 10-second timeout.
+
+The front door is locked and secure, I will build the Background Worker (Phase 3) that actually takes the Claim Check, downloads the README, and runs the AI pipeline!
