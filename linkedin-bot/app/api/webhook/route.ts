@@ -49,14 +49,16 @@ export async function POST(req: NextRequest) {
         // ok lets handover this package to qstash 
         console.log(`Valid release detected for: ${payload.repository.name}`);
 
+
+
         await qstashClient.publish({
             // qstash needs to deliver this forward
             url: `https://${req.headers.get("host")}/api/generate`,
-            body: {
+            body: JSON.stringify({
                 repoName: payload.repository.name,
                 owner: payload.repository.owner.login,
                 tag: payload.release.tag_name,
-            },
+            }),
         });
 
         // respond to github that we received the webhook and its valid 

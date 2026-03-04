@@ -462,3 +462,117 @@ Here is the exact flow of the code I wrote:
 5. **The Disconnect:** Immediately returns a `200 OK` to GitHub so the webhook delivery succeeds without triggering the 10-second timeout.
 
 The front door is locked and secure, I will build the Background Worker (Phase 3) that actually takes the Claim Check, downloads the README, and runs the AI pipeline!
+
+---
+
+## Day 9: The Background Worker & Data Hydration
+
+**Date:** February 26, 2026  
+**Goal:** Build the async Background Worker (`/api/generate`) to catch the Claim Check from Upstash, dynamically fetch the README from GitHub, and run the AI generation pipeline without timing out.
+
+---
+
+## Things I Learned
+
+### 1. The Double-Bouncer Security Model
+I initially wondered why I needed to verify a signature in this route when I already built a signature check in my `/api/webhook` Front Door. I learned that in distributed systems, every public endpoint needs its own security. If a hacker bypassed the Front Door and directly hit my Vercel URL, they could trigger my Groq and Hugging Face keys. The Front Door verifies GitHub. The Background Worker verifies Upstash. 
+
+*Critical bug fixed:* Cryptographic verification in the `@upstash/qstash` SDK returns a Promise. I forgot the `await` keyword on `receiver.verify()`, which meant the security check would have always passed instantly. Added the `await` to lock it down.
+
+### 2. Data Hydration (No Web Scraping Allowed)
+To get the actual code context, I needed the `README.md` file. I learned that scraping GitHub's UI is bad practice. Instead, GitHub provides a dedicated, machine-readable server: `raw.githubusercontent.com`. Because my portfolio repositories are public, my Next.js worker can just use the variables from the Upstash Claim Check (`owner`, `repoName`, `tag`) to construct the raw URL and `fetch()` the text instantly, without needing a GitHub API key.
+
+### 3. Vercel Serverless Limits
+Even though Upstash holds the connection open, Vercel still tries to kill functions that run longer than 15 seconds. I had to explicitly export `maxDuration = 60` at the top of the route to give the AI pipeline enough time to complete the text generation, the visual prompting, and the image rendering.
+
+---
+
+## How I Built It
+
+I wrapped my existing RAG and AI Pipeline inside the new Event-Driven logic. 
+
+Here is the finalized structure for `/api/generate/route.ts`:
+
+```typescript
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import Groq from 'groq-sdk';
+import { generateAndUploadImage } from "@/lib/generate-images";
+import { Receiver } from "@upstash/qstash";
+
+// 1. BYPASS VERCEL TIMEOUT
+export const maxDuration = 60; 
+
+/*
+    other imports and intialiseing 
+*/
+
+const receiver = new Receiver({
+    currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
+    nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
+});
+
+export async function POST(req: Request){
+    try {
+        
+        // PHASE 1: SECURITY & HYDRATION
+        
+        const rawBody = await req.text();
+        const signature = req.headers.get("Upstash-Signature") || "";
+
+        // Verify this request is genuinely from QStash
+        if(!signature){
+            return NextResponse.json({error: "Unauthorized"}, {status: 401});
+        }
+        const isValid = await receiver.verify({ signature: signature, body: rawBody });
+        if(!isValid){
+            return NextResponse.json({error: "Unauthorized: Invalid signature"}, {status: 401});
+        }
+
+        // Extract Claim Check
+        const payload = JSON.parse(rawBody);
+        const {repoName, owner, tag} = payload;
+
+        // Hydrate: Fetch actual README from GitHub's raw server
+        const rawUrl = `https://raw.githubusercontent.com/${owner}/${repoName}/${tag}/README.md`;
+        const githubResponse = await fetch(rawUrl);
+        let fetchedReadme ="";
+        if(githubResponse.ok){
+            fetchedReadme = await githubResponse.text();
+        } 
+
+        // Map data for the AI Pipeline
+        const readme = fetchedReadme;
+        const message = `Published Release ${tag} for ${repoName}`;
+        const diff = ""; 
+
+        
+        // PHASE 2: AI PIPELINE (RAG + Text + Image)
+    }
+}
+```
+
+Next i'll test if my feature works or not using Ngrok
+
+### 4. Testing Webhooks Locally (Ngrok)
+I couldn't test this pipeline with a standard `localhost` URL because GitHub and Upstash need a public internet address to deliver their webhooks. I learned how to use **Ngrok** to drill a secure tunnel from the public internet straight into my local Next.js server running on port 3000.
+
+*Bug fixed during testing:* Initially, the QStash payload crashed the worker with a `SyntaxError: "[object Object]" is not valid JSON`. I realized I needed to explicitly use `JSON.stringify()` on the payload body inside my `/api/webhook` route before handing it to QStash, rather than relying on the SDK to guess the formatting. Once stringified, the Background Worker parsed it perfectly.
+
+---
+
+### The Final End-to-End Test:
+To simulate the entire pipeline without deploying to Vercel, I executed the following flow:
+1. Booted up my local Next.js server (`npm run dev`).
+2. Started the Ngrok tunnel (`ngrok http 3000`) and copied the temporary public forwarding URL.
+3. Updated my private GitHub App's Webhook URL to point to `https://<my-ngrok-url>.ngrok-free.app/api/webhook`.
+4. Triggered a test pre-release on my GitHub repository.
+
+**The Result:** The terminal logs lit up exactly as designed! 
+* The Edge Receiver caught the payload and handed it off.
+* QStash woke up the Background Worker.
+* The Worker bypassed the 15-second serverless limit, successfully hydrated the README from GitHub, generated the AI text via Groq, rendered the 3D image via Hugging Face, and saved the final draft to Supabase.
+
+The async backend engine is officially 100% complete! Next up: The Frontend Approval Dashboard.
+

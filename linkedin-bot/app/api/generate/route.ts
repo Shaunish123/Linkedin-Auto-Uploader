@@ -10,6 +10,9 @@ import Groq from 'groq-sdk';
 // we will import new utility created /lib/generate-images.ts to generate images for the post
 import { generateAndUploadImage } from "@/lib/generate-images";
 
+// qstash for receiving msgs
+import { Receiver } from "@upstash/qstash";
+
 // import * as dotenv from 'dotenv';
 
 // dotenv.config({path: '.env.local'});
@@ -25,12 +28,78 @@ const supabase = createClient(
 const googleAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 const groq = new Groq({apiKey: process.env.GROQ_API_KEY});
 
+// Initialise QStash Receiver that takes header from webhook 
+// it will then reply ok to the webhook and send it to this
+// endpoint
+
+const receiver = new Receiver({
+    currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
+    nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
+});
+
 // a post request will come in with the commit message and code readme
 
 export async function POST(req: Request){
     try{
-        const{message, diff, readme} = await req.json();
-        console.log("Receive commit: ", message);
+        
+        // PHASE 1: SECURITY AND HYDRATION (hydration means taking the raw request and extracting the data we need, in this case the commit message and readme)
+
+        const rawBody = await req.text();
+        const signature = req.headers.get("Upstash-Signature") || "";
+
+        //verify this request is really from qstash and not 
+        //some malicious actor (qstash will sign the 
+        //request with the signing key we set up in the dashboard,
+        //so we can verify the signature using that key)
+
+
+        //in webhook endpoint we verified github signature, here we verify qstash signature
+
+        if(!signature){
+            console.error("No signature found in headers");
+            return NextResponse.json({error: "Unauthorized"}, {status: 401});
+        }
+
+        const isValid = await receiver.verify({
+            signature: signature,
+            body: rawBody,
+        })
+
+        if(!isValid){
+            console.error("Invalid signature");
+            return NextResponse.json({error: "Unauthorized: Invalid signature"}, {status: 401});
+        }
+
+        // Extract claim check coordinates (where it is stored in qstash) sent by qstash
+        const payload = JSON.parse(rawBody);
+        const {repoName, owner, tag} = payload;
+
+        console.log(`Received valid request from QStash for repo: ${owner}/${repoName} with tag: ${tag}`);
+
+        //fetch actual readme from github's officilal raw server
+
+        const rawUrl = `https://raw.githubusercontent.com/${owner}/${repoName}/${tag}/README.md`;
+        const githubResponse = await fetch(rawUrl);
+
+        let fetchedReadme ="";
+        if(githubResponse.ok){
+            fetchedReadme = await githubResponse.text();
+            console.log(`Fetched README from GitHub for ${owner}/${repoName}`);
+        } else {
+            console.warn(`Could not fetch README from GitHub for ${owner}/${repoName}. Status: ${githubResponse.status}`);
+        }
+
+        //mapping the new data to format we use
+        const readme = fetchedReadme;
+        const message = `Published Release ${tag} for ${repoName}`;
+        const diff = ""; // no diff rn but maybe in future we can add this function
+        
+        //--------------------------------
+
+        //PHASE 2 AI PIPELINE
+
+        // const{message, diff, readme} = await req.json();
+        // console.log("Receive commit: ", message);
 
         // step 1 : rag - find similar posts
 
@@ -129,6 +198,7 @@ export async function POST(req: Request){
         // step4 save the draft to supabase
 
         const {data, error} = await supabase.from('posts').insert([{
+            repo_name : repoName,
             commit_message : message,
             readme_content : readme ? readme.substring(0, 20000) : null, // Save a chunk of readme to DB for your records
             draft_content : aiContent,
@@ -148,6 +218,7 @@ export async function POST(req: Request){
 
     catch(error: any) {
         console.error("Error in POST handler / API: ", error);
+        // 500 error will tell upstash to retry this message later, which is good in case of transient errors like network issues or rate limits. We want to make sure the message eventually gets processed.
         return NextResponse.json({error: error.message || "Unknown error"}, {status: 500});
     }
 }
