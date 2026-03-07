@@ -576,3 +576,150 @@ To simulate the entire pipeline without deploying to Vercel, I executed the foll
 
 The async backend engine is officially 100% complete! Next up: The Frontend Approval Dashboard.
 
+---
+
+## Day 10: The Dashboard UI & The OAuth 2.0 Labyrinth
+
+**Date:** March 4, 2026  
+**Goal:** Build the Next.js frontend, style it with a premium animated background, and lock the dashboard behind a secure LinkedIn login using Supabase.
+
+---
+
+## Things I Learned (and Problems Faced)
+
+### 1. Tailwind v4 is a Massive Change
+When I started styling the frontend, I went looking for my `tailwind.config.js` file to add my custom "Poppins" font. It wasn't there. 
+
+**The Discovery:** Tailwind CSS v4 completely removed the config file. Instead of using a JavaScript file to set up your theme, everything is now done directly inside your main CSS file (`globals.css`) using standard CSS variables and a new `@theme` rule. It is much faster and cleaner, but it required me to unlearn how I've set up Next.js apps for the past few years.
+
+### 2. LinkedIn's API Bureaucracy (The Fake Company)
+I just wanted to add a "Sign in with LinkedIn" button so I could securely access my own app. 
+
+**The Problem:** Unlike Twitter or GitHub, LinkedIn's developer platform is strictly built for massive B2B (Business-to-Business) companies. They refuse to let a regular user create an API app. Their system forces every app to be legally tied to a recognized "Company Page."
+**The Fix:** I had to play along with their corporate rules. I went onto LinkedIn and created a completely blank, dummy "Company Page" (e.g., Shaunish Dev Lab). I didn't post anything to it, I just needed it to exist so I could link it to my Developer App. Once they gave me my secret API keys, I never had to look at the dummy page again.
+
+### 3. The LocalStorage vs. Cookie Bug (The Hardest Fix)
+Setting up the login button was easy. But when LinkedIn tried to send me back to my app after logging in, my app crashed with a `404` and a `bad_oauth_state` error.
+
+**The Problem:** When I clicked "Login," the standard Supabase tool (`@supabase/supabase-js`) saved a secret security handshake in my browser's **LocalStorage**. 
+However, LinkedIn sends you back to a **Server Route** (`/auth/callback`). A server lives on the backend; it cannot look inside your browser's LocalStorage. It can only read **Cookies**. Because my server couldn't find the security handshake, it assumed I was a hacker and rejected the login.
+**The Fix:** I had to uninstall the standard Supabase client and install `@supabase/ssr` (Server-Side Rendering). This special Next.js package automatically takes that security handshake and saves it as a **Cookie** instead. The server read the cookie, the handshake succeeded, and the login finally worked.
+
+---
+
+## How I Built It
+
+### Step 1: The UI Shell & Animated Background
+Since this is a tool I will look at every day, I wanted it to feel like a premium SaaS product, not a boring white login screen. 
+
+Instead of writing complex WebGL animations from scratch, I used a library called **React Bits**. I copied their `ColorBends.tsx` component, which creates a slow-moving, liquid-like gradient. I customized the colors to mix a dark "Vercel" black (`#0a0a0a`) with the official LinkedIn blue (`#0a66c2`). 
+
+I placed this animation on the bottom layer (`z-0`) and placed a "frosted glass" login card on top of it using Tailwind's `backdrop-blur` utility.
+
+### Step 2: Wiring the Supabase Auth
+I took the two secret passwords from my LinkedIn Developer App (the **Client ID** and **Client Secret**) and pasted them into my Supabase Dashboard under the **LinkedIn (OIDC)** settings. 
+*Note:* OIDC stands for OpenID Connect, which is the modern, secure standard for "Sign in with X" buttons. I also checked a box saying "Allow users without an email" just to make sure the login wouldn't break if LinkedIn hid my email for privacy reasons.
+
+### Step 3: The "Welcome Back" Door (Callback Route)
+To catch the user when LinkedIn redirects them back to my app, I built a dedicated Next.js Server Route at `app/auth/callback/route.ts`. 
+
+Here is exactly what this file does:
+1. It looks at the URL LinkedIn sent me to and grabs a temporary secret `code`.
+2. It boots up the Supabase server client and injects my browser's cookies.
+3. It calls a function called `exchangeCodeForSession()`. This securely trades the temporary code for a permanent "Access Token" (my VIP pass).
+4. Finally, it redirects me to the root home page (`/`).
+
+### Step 4: The Protected Dashboard
+In my main screen (`app/page.tsx`), I needed logic to decide whether to show the Login Button or the Dashboard.
+
+I used a React `useEffect` hook to constantly listen to `supabase.auth.onAuthStateChange`. 
+* If the user has no session (not logged in), it renders the animated background and the blue "Sign in with LinkedIn" button.
+* If the user has a session, it completely hides the login screen and renders the secure **"Inbox / Drafts"** dashboard view.
+
+The frontend gate is officially locked and working. Next up: Writing the database queries to pull my AI-generated drafts into the Inbox!
+
+---
+
+## Day 11: The Inbox Data & The "Pro Editor"
+
+**Date:** March 6, 2026  
+**Goal:** Pull real AI-generated drafts from the database into the dashboard and build a dedicated, full-screen editing experience for media and text.
+
+---
+
+## Things I Learned (and Problems Faced)
+
+### 1. The 5MB LocalStorage Trap
+When building the "Edit Draft" screen, I wanted auto-saving so I wouldn't lose my work if I accidentally refreshed the page. Saving text to `localStorage` was easy. But when I tried to save user-uploaded photos, the browser crashed with a `QuotaExceededError`.
+**The Problem:** Browsers strictly limit `localStorage` to about 5MB per website. Converting high-quality images to text (Base64) to store them locally instantly blew past this limit. 
+**The Fix:** I split the logic. Text is safely auto-saved to `localStorage` on every keystroke. Photos and videos, however, are strictly held in the React state (RAM). If the user uploads a video, I use `URL.createObjectURL(file)` to create a high-speed, temporary memory link just for the preview, completely bypassing storage limits.
+
+### 2. UX: The "Both" Assumption
+Initially, I had a "Photos" area and a "Video" area visible at the same time. 
+**The Problem:** If a user uploaded an image and a video, they would naturally assume both were getting posted. But the LinkedIn API strictly forbids mixing media types in a single post.
+**The Fix:** I built a strict toggle system. The user must actively click either the "Photos" tab or the "Video" tab. If they upload custom photos and then click the Video tab, a browser warning pops up telling them their photos will be wiped to make room for the video. 
+
+### 3. Protecting the AI Image
+During the toggle fix above, I realized a massive bug: if the user clicked the Video tab, it was wiping *all* photos, including the original 3D render generated by my AI pipeline!
+**The Fix:** I created a dedicated state variable called `originalImageUrl` when the page first loads. Now, if the user switches tabs, the UI deletes their manually uploaded photos but keeps the AI-generated image safely preserved in the background so it's waiting for them if they switch back to the Photos tab.
+
+---
+
+## How I Built It
+
+### Step 1: The Inbox Grid (`app/page.tsx`)
+I replaced the dummy "Welcome" message with a React `useEffect` that connects to Supabase. It queries the `posts` table for any row where `status = 'draft'` and orders them by the newest first. 
+
+I mapped these results into a sleek CSS grid of dark-mode cards. Each card shows the GitHub Repo Name, the Commit Message, a snippet of the AI text, and the AI-generated image thumbnail. 
+
+### Step 2: Rejecting Modals for a Pro Editor
+Originally, I was going to use a pop-up modal for the "Edit Draft" button. I realized that cutting corners here would make the app feel cheap, especially when handling multiple photos and video files. 
+
+Instead, I built a dedicated dynamic route at `app/edit/[id]/page.tsx`. It features:
+* A sticky top navigation bar with "Save to DB" and "Approve & Post" buttons.
+* A two-column layout: A Media Manager on the left (handling the 5-photo limit and video previews) and a real-time auto-saving Text Editor on the right.
+
+---
+
+## Day 12: The Inline AI Copilot & Simulation Testing
+
+**Date:** March 7, 2026  
+**Goal:** Add a "Magic Bar" so I can prompt the AI to rewrite my drafts inline, and build a safe way to test the entire flow without spamming my real LinkedIn feed.
+
+---
+
+## Things I Learned (and Problems Faced)
+
+### 1. The Classic `<!DOCTYPE html>` JSON Error
+When I built the API route for the AI Copilot and tested it, the frontend crashed with a cryptic error: `Unexpected token '<', "<!DOCTYPE "... is not valid JSON`.
+**The Problem:** This happens when the Next.js frontend expects a clean JSON response, but the backend crashes so hard it returns a default HTML 500 Error Page instead. The frontend chokes on the very first `<` character of the HTML.
+**The Root Cause:** I had initialized the `Groq` SDK at the very top of my backend file, outside of my `try/catch` block. Because my `.env.local` variables weren't loaded properly, the SDK crashed the entire file before it could send a readable error message.
+**The Fix:** I moved the Groq initialization *inside* the `try/catch` block and explicitly checked for the API key. If it fails, it now gracefully returns a clean JSON error `{"error": "Missing API Key"}` instead of an HTML page.
+
+### 2. Safe Testing (The Mock API)
+I needed to test the "Approve & Post" loading spinners, the `FormData` packaging, and the Supabase database updates (changing status from `draft` to `posted`). 
+**The Problem:** If I wired this up to LinkedIn right away, I would accidentally publish dozens of "test 123" posts to my professional network.
+**The Fix:** I built a "Mock" API route at `/api/linkedin/post`. Instead of talking to LinkedIn, it simply intercepts my `FormData`, prints the data (like video size and text length) to my VS Code terminal to prove it arrived, waits exactly 2 seconds to simulate network latency, and returns a fake success signal. This let me test the entire UI loop perfectly with zero risk.
+
+---
+
+## How I Built It
+
+### Step 1: The Inline AI Copilot
+I didn't want to leave the editor if the AI's first draft wasn't perfect. I added a "Magic Prompt Bar" (✨) directly under the text area. 
+
+When I type an instruction (e.g., *"Make this sound more aggressive"* or *"Add a joke about Docker"*), it triggers a new API route: `/api/ai/reprompt`.
+
+This route takes the current text and my new instruction, and sends them to Llama 3.3 via Groq with a strict System Prompt: 
+* *"You are an editor. Apply the user instruction to the draft. Do not use conversational filler. Do not use 'We'. Return ONLY the new raw text."*
+
+When the new text comes back, it instantly replaces the text in the editor and automatically updates the browser's `localStorage` cache.
+
+### Step 2: Packaging the Payload (`FormData`)
+To send the final approved post to the backend, I couldn't just use standard JSON because JSON cannot handle raw video files. 
+
+I updated the "Approve & Post" button to construct a `FormData` object. I appended the text, the media mode, and either the raw video `File` object or the array of Base64 photos. 
+
+I also grabbed my active LinkedIn `provider_token` directly from my Supabase session and attached it to the `Authorization` header so the backend has the legal authority to post on my behalf.
+
+The frontend is now 100% complete and heavily tested. The final step is replacing the Mock API with the actual LinkedIn API media upload dance!

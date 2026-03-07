@@ -129,7 +129,7 @@ export async function POST(req: Request){
         // step 2 : prompt and generate
 
         const prompt = `
-            ROLE: You are an expert developer ghostwriter. Write a LinkedIn post about a recent code update.
+            ROLE: You are an expert developer ghostwriter. Write a LinkedIn post about a recent project completion.
             
             REFERENCE STYLES (Mimic the tone, structure, formatting, and length of these):
             ${styleContext}

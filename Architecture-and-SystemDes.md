@@ -145,7 +145,7 @@ CREATE TABLE posts (
 
 ## 8. Future Roadmap (V2 Considerations)
 
-- **Multi-Tenancy:** Implementing Row Level Security (RLS) to support multiple users
-
-- **Analytics Feedback Loop:** Feeding LinkedIn engagement metrics back into the Vector DB to weight "successful" styles higher
-- **Analytics Feedback Loop:** Feeding LinkedIn engagement metrics back into the Vector DB to weight "successful" styles higher
+- **Multi-Tenancy (SaaS Transition):** Upgrading the architecture from a single-player internal tool to a public SaaS by adding `user_id` relations to all database tables (`posts`, `style_examples`) and enforcing strict Row Level Security (RLS) to isolate user data.
+- **Dynamic Webhook Provisioning:** Moving away from a single hardcoded `GITHUB_WEBHOOK_SECRET` in `.env.local`. Building a system to generate and verify unique webhook URLs and secrets for every new user so they can safely connect their own GitHub repositories.
+- **Decoupled Authentication & Token Management:** Transitioning from the V1 "Universal LinkedIn Master Key" to a standard SaaS authentication flow (e.g., Email/Password). Users will log into an isolated dashboard first, and *then* execute a LinkedIn OAuth flow to grant the application permission to store their individual access tokens.
+- **Analytics Feedback Loop:** Feeding live LinkedIn engagement metrics (likes, impressions) back into the Vector DB to dynamically weight "successful" styles higher during the RAG retrieval phase.
