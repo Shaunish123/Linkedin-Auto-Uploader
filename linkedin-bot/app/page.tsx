@@ -53,7 +53,7 @@ export default function Dashboard() {
       const { data, error } = await supabase
         .from("posts")
         .select("*")
-        .eq("status", "draft") // Matches your SQL check constraint!
+        // .eq("status", "draft") // Matches your SQL check constraint!
         .order("created_at", { ascending: false });
 
       if (error) {
@@ -72,18 +72,12 @@ export default function Dashboard() {
       provider: "linkedin_oidc",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
+        // --- ADD THIS EXACT LINE ---
+        scopes: "openid profile email w_member_social", 
       },
     });
     if (error) console.error("Login failed:", error.message);
   };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-neutral-950 flex items-center justify-center text-white">
-        <p className="animate-pulse text-neutral-400">Loading engine...</p>
-      </div>
-    );
-  }
 
   // LOGIN SCREEN
   if (!session) {
@@ -102,7 +96,6 @@ export default function Dashboard() {
             noise={0.1}
             transparent
             autoRotate={0}
-            color=""
           />
         </div>
 
@@ -126,9 +119,33 @@ export default function Dashboard() {
     );
   }
 
+// --- ADMIN LOCK ---
+  // IMPORTANT: Change this to the email address of your DUMMY LinkedIn account!
+  const ADMIN_EMAIL = "sharmashaunish@gmail.com"; 
+
+  if (session && session.user.email !== ADMIN_EMAIL) {
+    return (
+      <div className="min-h-screen bg-neutral-950 flex flex-col items-center justify-center text-white p-4 text-center">
+        <div className="bg-red-500/10 border border-red-500/50 p-8 rounded-2xl max-w-md">
+          <span className="text-4xl mb-4 block">🛑</span>
+          <h1 className="text-2xl font-bold mb-2">Access Denied</h1>
+          <p className="text-neutral-400 mb-6">
+            This is a private automation tool. Your account ({session.user.email}) is not authorized as an admin.
+          </p>
+          <button 
+            onClick={() => supabase.auth.signOut()}
+            className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-md transition-colors"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // DASHBOARD INBOX SCREEN
   return (
-    <div className="min-h-screen bg-neutral-950 text-white p-8">
+    <div className="min-h-screen bg-neutral-950 text-white p-8 relative">
       <div className="max-w-6xl mx-auto flex justify-between items-center mb-12">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Inbox</h1>
@@ -172,9 +189,12 @@ export default function Dashboard() {
                       No Image
                     </div>
                   )}
-                  {/* Status Badge */}
-                  <div className="absolute top-3 right-3 bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 text-xs font-medium px-2.5 py-1 rounded-full backdrop-blur-md">
-                    Pending Approval
+                  <div className={`absolute top-3 right-3 text-xs font-medium px-2.5 py-1 rounded-full backdrop-blur-md border ${
+                    post.status === "posted" 
+                      ? "bg-green-500/10 text-green-500 border-green-500/20" 
+                      : "bg-yellow-500/10 text-yellow-500 border-yellow-500/20"
+                  }`}>
+                    {post.status === "posted" ? "✅ Published" : "Pending Approval"}
                   </div>
                 </div>
 
@@ -189,22 +209,26 @@ export default function Dashboard() {
                     </span>
                   </div>
                   
-                  {/* The AI Draft Text (Truncated) */}
                   <p className="text-sm text-neutral-400 line-clamp-4 flex-grow whitespace-pre-wrap">
                     {post.draft_content}
                   </p>
 
                   {/* Action Buttons */}
                   <div className="grid grid-cols-2 gap-3 mt-6">
-                    <button 
-                      onClick={() => router.push(`/edit/${post.id}`)} 
-                      className="w-full py-2 bg-neutral-800 hover:bg-neutral-700 text-white text-sm font-medium rounded-lg transition-colors"
-                    >
-                      Edit Draft
-                    </button>
-                    <button className="w-full py-2 bg-[#0a66c2] hover:bg-[#004182] text-white text-sm font-medium rounded-lg shadow-lg hover:shadow-blue-900/50 transition-all">
-                      Approve & Post
-                    </button>
+                    {post.status === "posted" ? (
+                      <div className="col-span-2 py-2 bg-neutral-800/50 text-neutral-500 text-sm font-medium rounded-lg text-center border border-neutral-800">
+                        Live on LinkedIn
+                      </div>
+                    ) : (
+                      <>
+                        <button onClick={() => router.push(`/edit/${post.id}`)} className="w-full py-2 bg-neutral-800 hover:bg-neutral-700 text-white text-sm font-medium rounded-lg transition-colors">
+                          Edit Draft
+                        </button>
+                        <button className="w-full py-2 bg-[#0a66c2]/50 cursor-not-allowed text-white text-sm font-medium rounded-lg transition-all">
+                          Open to Post
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

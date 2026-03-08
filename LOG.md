@@ -723,3 +723,89 @@ I updated the "Approve & Post" button to construct a `FormData` object. I append
 I also grabbed my active LinkedIn `provider_token` directly from my Supabase session and attached it to the `Authorization` header so the backend has the legal authority to post on my behalf.
 
 The frontend is now 100% complete and heavily tested. The final step is replacing the Mock API with the actual LinkedIn API media upload dance!
+
+---
+
+## Day 13: The LinkedIn "Bouncer" & The First Live Text-Only Post
+
+**Date:** March 8, 2026  
+**Goal:** Transition from a simulation-based "Mock API" to the real-world LinkedIn UGC (User Generated Content) API and resolve authentication permission hurdles.
+
+---
+
+## Things I Learned (and Problems Faced)
+
+### 1. The OAuth 2.0 Scope Labyrinth (`403 Forbidden`)
+After wiring up the production endpoint, my first attempt to post resulted in a sharp `ACCESS_DENIED` error from LinkedIn. 
+
+**The Problem:** By default, Supabase's LinkedIn OIDC provider only requests the `openid`, `profile`, and `email` scopes. These are "Read" permissions. To actually "Write" to a feed, you need the specific `w_member_social` permission.
+
+**The Fix:** I had to explicitly modify the `signInWithOAuth` call in the frontend to include the required scope. 
+
+**The "Ghost Token" Issue:** I learned that browsers aggressively cache OAuth tokens. Simply updating the code wasn't enough; I had to perform a **"Hard Reset"** by clearing LocalStorage and Cookies to force LinkedIn to show a fresh consent screen that explicitly included the "Create, modify, and delete posts" permission.
+
+### 2. Identity Architecture (URNs vs IDs)
+LinkedIn’s API doesn't use standard integer IDs for authors. It uses **URNs (Uniform Resource Names)**.
+
+**The Logic:** Before posting, the backend must "self-identify." I built a pre-flight check that pings the `https://api.linkedin.com/v2/userinfo` endpoint using the user's access token. 
+
+**The Format:** LinkedIn returns a `sub` field. I had to manually wrap this into the strict LinkedIn protocol format: `urn:li:person:${userData.sub}`. Without this exact string prefix, the entire JSON payload is rejected as malformed.
+
+---
+
+## How I Built It
+
+### Step 1: The Production Bridge (`/api/linkedin/post`)
+I converted the mock route into a real bridge. I implemented the `ugcPosts` endpoint, which is the current enterprise standard for LinkedIn content. 
+
+For this initial phase, I set the `shareMediaCategory` to `"NONE"`. This allowed me to verify the authentication handshake and the URN formatting without the complexity of binary file uploads.
+
+**Result:** At 4:45 PM, the first automated text post was successfully pushed from my local dev environment to my dummy LinkedIn account. **The "Brain-to-Feed" pipeline is officially live.**
+
+---
+
+## Day 14: The Multi-Image Handshake & The Admin Bouncer
+
+**Date:** March 9, 2026  
+**Goal:** Implement the complex 3-step binary media upload process for images and secure the dashboard against unauthorized access.
+
+---
+
+## Things I Learned (and Problems Faced)
+
+### 1. The 3-Step Media "Dance"
+LinkedIn does not accept images as simple URL links or attachments in the final post request. To prevent server timeouts, they require an asynchronous handshake:
+1.  **Register:** Tell LinkedIn an image is coming. LinkedIn provides a `digitalmediaAsset` URN and a temporary, high-speed **Upload URL**.
+2.  **The Heavy Lift (Binary PUT):** The server must take the raw image bytes and perform a `PUT` request to that temporary URL.
+3.  **The Reference:** The final post JSON doesn't contain the image; it contains the `asset_urn` tracking number.
+
+### 2. The "Smart Image Handler" (Binary Buffer Processing)
+My backend initially crashed when trying to process the AI-generated images.
+
+**The Discovery:** The "Pro Editor" sends two distinct data types in the same array:
+* **External URLs:** The AI-generated 3D render already hosted in my Supabase bucket (starts with `http`).
+* **Base64 Strings:** Manual photos uploaded by the user from their local machine (starts with `data:image`).
+
+**The Fix:** I wrote a robust parser that detects the string prefix. If it's a URL, it uses `fetch` to download the image into an `ArrayBuffer`. If it's Base64, it strips the metadata and converts it into a Node.js `Buffer`. This ensures the server always has raw binary bytes to ship to LinkedIn.
+
+### 3. Preventing Multi-Tenant Data Leakage
+I realized a massive security flaw: since the app uses a public LinkedIn login, anyone who found the URL could log in and see my private GitHub drafts, and potentially post them to their own feed!
+
+**The Fix:** I implemented a frontend "Admin Bouncer." The dashboard now captures the logged-in user's email and compares it against a hardcoded `ADMIN_EMAIL`. If a stranger logs in, the app renders a "Restricted Access" screen and refuses to fetch any data from Supabase.
+
+---
+
+## How I Built It
+
+### Step 1: The Admin Lock
+I updated `app/page.tsx` to instantly verify the session email before rendering the inbox grid, ensuring complete privacy for my automated drafts.
+
+### Step 2: The Multi-Photo Logic
+I upgraded the backend `/api/linkedin/post/route.ts` to loop through the `photos` array. Because LinkedIn requires each image to be registered and uploaded individually, I used a `for` loop to handle the asynchronous handshakes in sequence. Once all images are uploaded and marked as ready on LinkedIn's servers, the backend constructs the final `ugcPost` payload with the `shareMediaCategory` set to `"IMAGE"`.
+
+### Step 3: UI Updates (The "Status" History)
+I modified the Supabase query in `app/page.tsx` to remove the `.eq('status', 'draft')` filter so published posts wouldn't disappear. I then built a dynamic badge system:
+* **Yellow:** Pending Approval (Editable)
+* **Green:** ✅ Published (Locked/Read-Only)
+
+**Result:** The Pro Editor can now successfully publish posts containing a mix of AI-generated visuals and manual uploads directly to the feed. The system is secure, the data is persistent, and the UX handles the transition from "Draft" to "Live" seamlessly.
